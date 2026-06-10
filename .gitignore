@@ -1,0 +1,11 @@
+.streamlit/secrets.toml
+secrets.toml
+__pycache__/
+*.pyc
+.DS_Store
+
+# Pastas de backup/legado contendo chaves expostas
+DIVERSOS_PY/
+entrada_qrz/
+Nova pasta/
+
