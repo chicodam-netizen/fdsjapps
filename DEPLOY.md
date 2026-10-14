@@ -19,8 +19,10 @@ Crie o diretório `.streamlit/` no diretório raiz do projeto e adicione o arqui
 ```toml
 # Conexão com o Supabase
 [connections.supabase]
-supabase_url = "https://sua-url-do-supabase.supabase.co"
-supabase_key = "sua-anon-key-ou-service-role-key-do-supabase"
+SUPABASE_URL = "https://<ref-do-projeto>.supabase.co"
+# Use a chave SECRETA (service_role, aba Legacy, "eyJ...") - o RLS bloqueia a chave anon/publishable.
+# O Streamlit roda no servidor, então esta chave nunca chega ao navegador. Nunca a exponha.
+SUPABASE_KEY = "<service_role key>"
 
 # Chave API do Groq
 GROQ_API_KEY = "gsk_sua-chave-api-da-groq"
@@ -47,7 +49,11 @@ smtp_password = "sua-senha-de-aplicativo"
 
 ## 3. Estrutura do Banco de Dados (Supabase)
 
-O sistema espera que as seguintes tabelas estejam criadas no Supabase com suas respectivas colunas:
+Para criar o banco de uma nova instância (uma por empresa), abra o **SQL Editor** do projeto
+Supabase e execute o arquivo [`sql/schema.sql`](sql/schema.sql). Ele cria as tabelas, a numeração
+automática dos IDs e liga o RLS com acesso restrito ao papel `service_role`.
+
+Resumo das colunas:
 
 ### Tabela: `usuarios`
 * `id` (int8, Primary Key, Auto-increment)

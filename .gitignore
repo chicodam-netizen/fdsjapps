@@ -3,6 +3,9 @@ secrets.toml
 __pycache__/
 *.pyc
 .venv/
+
+# Exportações de dados (contêm hashes de senha)
+backups/
 venv/
 .DS_Store
 
