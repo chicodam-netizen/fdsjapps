@@ -1,15 +1,11 @@
 import streamlit as st
 import pandas as pd
-from st_supabase_connection import SupabaseConnection
-from PIL import Image
-from datetime import datetime, timedelta
 import plotly.express as px
-import hashlib
-import secrets
-import random
-import string
-import re
-from io import BytesIO
+import db_client
+import auth
+import config
+import ui_components
+from datetime import datetime
 
 # ==========================================
 # 1. CONFIGURAÇÃO DA PÁGINA
@@ -17,260 +13,12 @@ from io import BytesIO
 st.set_page_config(page_title="Gestão de Backlog Pro", layout="wide")
 
 # Oculta a navegação padrão do Streamlit na barra lateral
-st.markdown(
-    """
-    <style>
-        [data-testid="stSidebarNav"] {
-            display: none;
-        }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+ui_components.injetar_css_ocultacao(nav_only=True)
 
-# 2. INICIALIZAÇÃO DO ESTADO DA SESSÃO
-if 'authenticated' not in st.session_state:
-    st.session_state.authenticated = False
-if 'user_email' not in st.session_state:
-    st.session_state.user_email = None
-if 'user_id' not in st.session_state:
-    st.session_state.user_id = None
-if 'user_nome' not in st.session_state:
-    st.session_state.user_nome = None
-if 'login_attempts' not in st.session_state:
-    st.session_state.login_attempts = {}
-if 'reset_step' not in st.session_state:
-    st.session_state.reset_step = None          # 'request' ou 'verify'
-if 'reset_email' not in st.session_state:
-    st.session_state.reset_email = None
-if 'reset_code' not in st.session_state:
-    st.session_state.reset_code = None
-
-# 3. CONEXÃO SUPABASE
-try:
-    conn = st.connection(
-        "supabase",
-        type=SupabaseConnection
-    )
-except Exception as e:
-    st.error(f"Erro na conexão com Supabase: {str(e)}")
-    st.stop()
+STATUS_LISTA = ["Em Andamento", "Atrasada", "Concluida"]
 
 # ==========================================
-# 4. FUNÇÕES DE HASH DE SENHA
-# ==========================================
-def hash_senha(senha: str, salt: str = None) -> tuple:
-    if salt is None:
-        salt = secrets.token_hex(16)
-    senha_com_salt = senha + salt
-    hash_obj = hashlib.pbkdf2_hmac('sha256', senha_com_salt.encode(), salt.encode(), 100000)
-    return hash_obj.hex(), salt
-
-def verificar_senha(senha: str, hash_armazenado: str, salt: str) -> bool:
-    if not salt:
-        return False
-    novo_hash, _ = hash_senha(senha, salt)
-    return novo_hash == hash_armazenado
-
-# ==========================================
-# 5. FUNÇÕES DE RECUPERAÇÃO DE SENHA (SEM 2FA)
-# ==========================================
-def solicitar_reset_senha(email: str):
-    """Gera código de 6 dígitos e armazena na tabela (simula envio por e-mail)"""
-    try:
-        resp = conn.table("usuarios").select("id").eq("email", email).execute()
-        if not resp.data:
-            return False, "E-mail não cadastrado"
-
-        user_id = resp.data[0]['id']
-        reset_code = ''.join(random.choices(string.digits, k=6))
-        expires_at = datetime.now() + timedelta(minutes=15)
-
-        # Atualiza o código e expiração na tabela (assumindo que as colunas existem)
-        conn.table("usuarios").update({
-            "reset_code": reset_code,
-            "reset_expires": expires_at.isoformat()
-        }).eq("id", user_id).execute()
-
-        # Em ambiente real, enviar e-mail. Aqui apenas exibimos o código.
-        st.info(f"Código de recuperação (simulado): **{reset_code}** - válido por 15 minutos")
-        return True, reset_code
-    except Exception as e:
-        return False, f"Erro: {str(e)}"
-
-def verificar_reset_code(email: str, code: str):
-    """Verifica se o código é válido e não expirou"""
-    try:
-        resp = conn.table("usuarios").select("reset_code", "reset_expires").eq("email", email).execute()
-        if not resp.data:
-            return False, "E-mail não encontrado"
-        usuario = resp.data[0]
-        stored_code = usuario.get('reset_code')
-        expires_str = usuario.get('reset_expires')
-        if not stored_code or stored_code != code:
-            return False, "Código inválido"
-        if expires_str:
-            exp = datetime.fromisoformat(expires_str.replace('Z', '+00:00'))
-            if datetime.now() > exp:
-                return False, "Código expirado. Solicite um novo."
-        return True, "Código válido"
-    except Exception as e:
-        return False, f"Erro: {str(e)}"
-
-def redefinir_senha(email: str, nova_senha: str):
-    """Redefine a senha e limpa os campos de reset"""
-    try:
-        if len(nova_senha) < 6:
-            return False, "A senha deve ter no mínimo 6 caracteres"
-        novo_hash, novo_salt = hash_senha(nova_senha)
-        conn.table("usuarios").update({
-            "senha_hash": novo_hash,
-            "salt": novo_salt,
-            "reset_code": None,
-            "reset_expires": None
-        }).eq("email", email).execute()
-        return True, "Senha redefinida com sucesso! Faça login."
-    except Exception as e:
-        return False, f"Erro: {str(e)}"
-
-def fazer_login(email: str, senha: str):
-    try:
-        response = conn.table("usuarios").select("*").eq("email", email).execute()
-        if not response.data:
-            return False, "E-mail não encontrado"
-        usuario = response.data[0]
-        tentativas = st.session_state.login_attempts.get(email, 0)
-        if tentativas >= 5:
-            return False, "Muitas tentativas. Tente novamente mais tarde."
-        if not verificar_senha(senha, usuario['senha_hash'], usuario.get('salt', '')):
-            st.session_state.login_attempts[email] = tentativas + 1
-            return False, "Senha incorreta"
-        st.session_state.login_attempts[email] = 0
-        conn.table("usuarios").update({
-            "last_login": datetime.now().isoformat()
-        }).eq("id", usuario['id']).execute()
-        st.session_state.authenticated = True
-        st.session_state.user_email = usuario['email']
-        st.session_state.user_id = usuario['id']
-        st.session_state.user_nome = usuario.get('nome_completo', 'Usuário')
-        return True, "Login realizado com sucesso!"
-    except Exception as e:
-        return False, f"Erro: {str(e)}"
-
-def fazer_logout():
-    st.session_state.authenticated = False
-    st.session_state.user_email = None
-    st.session_state.user_id = None
-    st.session_state.user_nome = None
-    st.session_state.reset_step = None
-    st.session_state.reset_email = None
-    return True
-
-def alterar_senha(senha_atual: str, nova_senha: str):
-    try:
-        response = conn.table("usuarios").select("*").eq("id", st.session_state.user_id).execute()
-        if not response.data:
-            return False, "Usuário não encontrado"
-        usuario = response.data[0]
-        if not verificar_senha(senha_atual, usuario['senha_hash'], usuario.get('salt', '')):
-            return False, "Senha atual incorreta"
-        if len(nova_senha) < 6:
-            return False, "A nova senha deve ter no mínimo 6 caracteres"
-        novo_hash, novo_salt = hash_senha(nova_senha)
-        conn.table("usuarios").update({
-            "senha_hash": novo_hash,
-            "salt": novo_salt
-        }).eq("id", st.session_state.user_id).execute()
-        return True, "Senha alterada com sucesso!"
-    except Exception as e:
-        return False, f"Erro: {str(e)}"
-
-# ==========================================
-# 6. TELA DE AUTENTICAÇÃO (APENAS LOGIN + ESQUECI SENHA)
-# ==========================================
-def tela_autenticacao():
-    try:
-        img_logo = Image.open("logo.png")
-        st.sidebar.image(img_logo, use_container_width=True)
-    except:
-        st.sidebar.warning("Arquivo logo.png não encontrado na pasta.")
-
-    st.title("🔐 Sistema de Gestão de Backlog")
-    st.markdown("### Faça login para acessar o sistema")
-
-    # Etapa de redefinição de senha
-    if st.session_state.reset_step == "verify":
-        st.subheader("🔑 Redefinir senha")
-        with st.form("form_reset_verify"):
-            email = st.text_input("E-mail", value=st.session_state.reset_email, disabled=True)
-            code = st.text_input("Código de verificação", placeholder="Digite o código recebido")
-            nova_senha = st.text_input("Nova senha", type="password", placeholder="Mínimo 6 caracteres")
-            confirmar = st.text_input("Confirmar nova senha", type="password")
-            if st.form_submit_button("Redefinir senha", use_container_width=True):
-                if code and nova_senha and confirmar:
-                    if nova_senha != confirmar:
-                        st.error("As senhas não coincidem")
-                    elif len(nova_senha) < 6:
-                        st.error("A senha deve ter no mínimo 6 caracteres")
-                    else:
-                        valido, msg = verificar_reset_code(email, code)
-                        if valido:
-                            sucesso, msg2 = redefinir_senha(email, nova_senha)
-                            if sucesso:
-                                st.success(msg2)
-                                st.session_state.reset_step = None
-                                st.session_state.reset_email = None
-                                st.rerun()
-                            else:
-                                st.error(msg2)
-                        else:
-                            st.error(msg)
-                else:
-                    st.warning("Preencha todos os campos")
-        if st.button("Voltar ao login"):
-            st.session_state.reset_step = None
-            st.session_state.reset_email = None
-            st.rerun()
-        return
-
-    # Login normal
-    with st.form("form_login"):
-        email = st.text_input("E-mail", placeholder="seu@email.com")
-        senha = st.text_input("Senha", type="password", placeholder="••••••••")
-        submit_login = st.form_submit_button("Entrar", use_container_width=True)
-
-        if submit_login:
-            if email and senha:
-                with st.spinner("Autenticando..."):
-                    sucesso, mensagem = fazer_login(email, senha)
-                    if sucesso:
-                        st.success(mensagem)
-                        st.rerun()
-                    else:
-                        st.error(mensagem)
-            else:
-                st.warning("Preencha todos os campos")
-
-    # Link "Esqueci minha senha"
-    with st.expander("🔒 Esqueci minha senha"):
-        with st.form("form_reset_request"):
-            reset_email = st.text_input("Digite seu e-mail cadastrado")
-            if st.form_submit_button("Enviar código de recuperação"):
-                if reset_email:
-                    with st.spinner("Enviando código..."):
-                        sucesso, msg = solicitar_reset_senha(reset_email)
-                        if sucesso:
-                            st.success("Código gerado! (verifique a mensagem informativa acima)")
-                            st.session_state.reset_step = "verify"
-                            st.session_state.reset_email = reset_email
-                            st.rerun()
-                        else:
-                            st.error(msg)
-                else:
-                    st.warning("Informe seu e-mail")
-
-# ==========================================
-# 7. FUNÇÕES AUXILIARES DO SISTEMA (CRUD, GRÁFICOS)
+# 2. FUNÇÕES COMPARTILHADAS (MATRIZ E STATUS)
 # ==========================================
 def calcular_metricas(r, e, i, g, u, t):
     m_rei = r * e * i
@@ -288,87 +36,72 @@ def cor_status(val):
         color = "#333333"
     return f'background-color: {color}; color: white; font-weight: bold'
 
-def limpar_dados(df):
-    if df.empty:
-        return df
-    colunas_texto = [
-        'tarefa_product_backlog', 'setor_grooming_detalhamento',
-        'pessoa_responsavel', 'origem_nao_conformidade',
-        'status', 'detalhamento_acoes'
-    ]
-    for coluna in colunas_texto:
-        if coluna in df.columns:
-            df[coluna] = df[coluna].astype(str)
-            df[coluna] = df[coluna].str.strip()
-            df[coluna] = df[coluna].str.replace('\n', ' ')
-            df[coluna] = df[coluna].str.replace('\r', ' ')
-            df[coluna] = df[coluna].str.replace(r'\s+', ' ', regex=True)
-            df[coluna] = df[coluna].replace(['nan', 'null', 'None', 'NaN'], '')
-            df[coluna] = df[coluna].replace('', 'Não Atribuído')
-    if 'status' in df.columns:
-        df['status'] = df['status'].replace({
-            'finalizada': 'Concluida', 'Finalizada': 'Concluida',
-            'concluida': 'Concluida', 'concluído': 'Concluida',
-            'em andamento': 'Em Andamento', 'Em andamento': 'Em Andamento',
-            'atrasada': 'Atrasada', 'atrasado': 'Atrasada'
-        })
-    colunas_inteiras = [
-        'resultado_rei', 'execucao_rei', 'investimento_rei', 'matriz_rei',
-        'gravidade_gut', 'urgencia_gut', 'tendencia_gut', 'matriz_gut', 'soma_gut_rei'
-    ]
-    for col in colunas_inteiras:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').round().astype('Int64')
-    colunas_data = ['data_previsao_conclusao', 'data_conclusao']
-    for col in colunas_data:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors='coerce')
-    hoje = pd.Timestamp(datetime.now().date())
-    if 'data_previsao_conclusao' in df.columns and 'data_conclusao' in df.columns and 'status' in df.columns:
-        mascara_atraso = (
-            df['data_conclusao'].isna() &
-            df['data_previsao_conclusao'].notna() &
-            (df['data_previsao_conclusao'] < hoje) &
-            (df['status'] != 'Concluida')
-        )
-        df.loc[mascara_atraso, 'status'] = 'Atrasada'
-    return df
+def texto_campo(dados, coluna):
+    """Valor de texto para o formulário; o rótulo 'Não Atribuído' é só visual e vira vazio."""
+    valor = dados.get(coluna, '')
+    if pd.isna(valor) or str(valor).strip() in ('', config.TEXTO_NAO_ATRIBUIDO, 'nan', 'None'):
+        return ''
+    return str(valor)
 
-def carregar_dados():
+def nota_campo(dados, coluna):
+    """Nota GUT/REI válida (1 a 5) para o slider; valores vazios/zerados usam 3."""
+    valor = dados.get(coluna)
+    try:
+        valor = int(valor)
+    except (TypeError, ValueError):
+        return 3
+    return valor if 1 <= valor <= 5 else 3
+
+def data_campo(dados, coluna):
+    """Converte a data do DataFrame em date (ou None)."""
+    valor = dados.get(coluna)
+    if valor is None or pd.isna(valor):
+        return None
+    return valor.date() if hasattr(valor, 'date') else valor
+
+def rotulo_tarefa(row):
+    """Rótulo legível de uma tarefa para listas de seleção."""
+    titulo = str(row.get('tarefa_product_backlog', ''))
+    if len(titulo) > 60:
+        titulo = titulo[:60] + "…"
+    return f"#{row['id_registro']} — {titulo} | {row.get('pessoa_responsavel', '')} | {row.get('status', '')}"
+
+def gravou_com_sucesso(mensagem):
+    """Após gravar: descarta o cache, guarda a mensagem e recarrega a tela."""
+    db_client.limpar_cache_backlog()
+    ui_components.definir_aviso(mensagem)
+    st.rerun()
+
+# ==========================================
+# 3. FLUXO PRINCIPAL
+# ==========================================
+def main():
+    conn = db_client.obter_conexao()
+    auth.inicializar_sessao()
+
+    # Redireciona se não autenticado
     if not st.session_state.authenticated:
-        return pd.DataFrame()
-    try:
-        query = conn.table("tarefasqrz").select("*").execute()
-        df = pd.DataFrame(query.data)
-        if not df.empty:
-            df = limpar_dados(df)
-        return df
-    except Exception as e:
-        st.error(f"Erro ao carregar dados: {str(e)}")
-        return pd.DataFrame()
+        auth.renderizar_tela_login(conn, apenas_admin=False)
+        return
 
-# ==========================================
-# 8. INTERFACE PRINCIPAL (APÓS LOGIN - SEM 2FA)
-# ==========================================
-def interface_principal():
+    # Sidebar do Usuário
     try:
-        img_logo = Image.open("logo.png")
-        st.sidebar.image(img_logo, use_container_width=True)
+        st.sidebar.image("logo.png", use_container_width=True)
     except:
-        st.sidebar.warning("Arquivo logo.png não encontrado na pasta.")
+        pass
 
-    st.sidebar.divider()
     st.sidebar.markdown(f"### 👤 {st.session_state.user_nome}")
     st.sidebar.markdown(f"📧 {st.session_state.user_email}")
 
-    # Menu simplificado (apenas Dashboard e Alterar Senha)
-    menu_usuario = st.sidebar.selectbox("Menu", ["📊 Dashboard", "🔑 Alterar Senha"])
+    menu_usuario = st.sidebar.selectbox("Menu", ["📋 Tarefas", "🔑 Alterar Senha"])
 
     if st.sidebar.button("🚪 Sair do Sistema", use_container_width=True):
-        fazer_logout()
+        auth.fazer_logout(apenas_admin=False)
         st.rerun()
+
     st.sidebar.divider()
 
+    # Rota: Alterar Senha
     if menu_usuario == "🔑 Alterar Senha":
         st.title("🔑 Alterar Senha")
         with st.form("form_alterar_senha"):
@@ -379,7 +112,7 @@ def interface_principal():
                 if nova_senha == confirmar_senha:
                     if len(nova_senha) >= 6:
                         with st.spinner("Alterando senha..."):
-                            sucesso, mensagem = alterar_senha(senha_atual, nova_senha)
+                            sucesso, mensagem = db_client.alterar_propria_senha(conn, st.session_state.user_id, senha_atual, nova_senha)
                             if sucesso:
                                 st.success(mensagem)
                                 st.balloons()
@@ -391,15 +124,20 @@ def interface_principal():
                     st.error("As senhas não coincidem")
         return
 
-    # DASHBOARD (restante do código original, inalterado)
+    # Rota: Gestão de Backlog
     st.title("📋 Sistema de Controle de Tarefas")
-    df = carregar_dados()
+    ui_components.exibir_aviso()
+    df = db_client.carregar_dados_backlog(1)
 
     if not df.empty:
         if 'user_id' in df.columns:
-            usuarios_response = conn.table("usuarios").select("id, nome_completo, email").execute()
-            usuarios_dict = {u['id']: u['nome_completo'] for u in usuarios_response.data}
-            df['criado_por'] = df['user_id'].map(usuarios_dict).fillna('Sistema')
+            try:
+                usuarios_response = conn.table("usuarios").select("id, nome_completo, email").execute()
+                usuarios_dict = {u['id']: u['nome_completo'] for u in usuarios_response.data}
+                df['criado_por'] = df['user_id'].map(usuarios_dict).fillna('Sistema')
+            except:
+                df['criado_por'] = 'Não Atribuído'
+
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Total de Tarefas", len(df))
@@ -415,22 +153,29 @@ def interface_principal():
 
     with aba1:
         if not df.empty:
-            st.subheader("📊 Distribuição de Tarefas por Responsável e Status")
-            df_agrupado = df.groupby(['pessoa_responsavel', 'status']).size().reset_index(name='quantidade')
-            ordem = df.groupby('pessoa_responsavel').size().sort_values(ascending=False).index
-            df_agrupado['pessoa_responsavel'] = pd.Categorical(df_agrupado['pessoa_responsavel'], categories=ordem, ordered=True)
-            df_agrupado = df_agrupado.sort_values('pessoa_responsavel')
-            fig = px.bar(
-                df_agrupado, x='pessoa_responsavel', y='quantidade', color='status',
-                title="Tarefas por Responsável e Status",
-                labels={'pessoa_responsavel': 'Responsável', 'quantidade': 'Número de Tarefas', 'status': 'Status'},
-                color_discrete_map={'Concluida': '#00c853', 'Em Andamento': '#faca2b', 'Atrasada': '#ff4b4b'},
-                barmode='group', text='quantidade'
-            )
-            fig.update_layout(xaxis_tickangle=-45, height=400, legend_title="Status", plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', xaxis_title="", margin=dict(t=50, b=100))
-            fig.update_traces(textposition='outside')
-            st.plotly_chart(fig, use_container_width=True)
-            st.divider()
+            with st.expander("📊 Distribuição de Tarefas por Responsável e Status"):
+                df_agrupado = df.groupby(['pessoa_responsavel', 'status']).size().reset_index(name='quantidade')
+                ordem = df.groupby('pessoa_responsavel').size().sort_values(ascending=False).index
+                df_agrupado['pessoa_responsavel'] = pd.Categorical(df_agrupado['pessoa_responsavel'], categories=ordem, ordered=True)
+                df_agrupado = df_agrupado.sort_values('pessoa_responsavel')
+                fig = px.bar(
+                    df_agrupado, x='pessoa_responsavel', y='quantidade', color='status',
+                    title="Tarefas por Responsável e Status",
+                    labels={'pessoa_responsavel': 'Responsável', 'quantidade': 'Número de Tarefas', 'status': 'Status'},
+                    color_discrete_map={'Concluida': '#00c853', 'Em Andamento': '#faca2b', 'Atrasada': '#ff4b4b'},
+                    barmode='group', text='quantidade'
+                )
+                fig.update_layout(
+                    xaxis_tickangle=-45,
+                    height=400,
+                    legend_title="Status",
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    xaxis_title="",
+                    margin=dict(t=50, b=100)
+                )
+                fig.update_traces(textposition='outside')
+                st.plotly_chart(fig, use_container_width=True)
 
             termo = st.text_input("🔍 Localizar tarefa (ID, Nome, Responsável, Setor ou Origem)")
             df_filtrado = df[df.apply(lambda row: termo.lower() in row.astype(str).str.lower().values, axis=1)] if termo else df
@@ -443,111 +188,120 @@ def interface_principal():
             st.subheader("📝 Editar Registro")
             lista_ids = df_filtrado['id_registro'].tolist()
             if lista_ids:
-                id_selecionado = st.selectbox("Selecione o ID para editar", options=lista_ids)
+                rotulos = {row['id_registro']: rotulo_tarefa(row) for _, row in df_filtrado.iterrows()}
+                id_selecionado = st.selectbox(
+                    "Selecione a tarefa para editar", options=lista_ids,
+                    format_func=lambda i: rotulos.get(i, str(i)),
+                    help="Digite parte do título ou do ID para filtrar a lista"
+                )
                 if id_selecionado:
                     dados_atuais = df[df['id_registro'] == id_selecionado].iloc[0]
-                    data_previsao = dados_atuais.get('data_previsao_conclusao')
-                    if data_previsao and pd.notna(data_previsao):
-                        data_previsao = data_previsao.date() if hasattr(data_previsao, 'date') else data_previsao
-                    else:
-                        data_previsao = None
-                    data_conclusao = dados_atuais.get('data_conclusao')
-                    if data_conclusao and pd.notna(data_conclusao):
-                        data_conclusao = data_conclusao.date() if hasattr(data_conclusao, 'date') else data_conclusao
-                        tarefa_ja_concluida = True
-                    else:
-                        data_conclusao = None
-                        tarefa_ja_concluida = False
+                    data_previsao = data_campo(dados_atuais, 'data_previsao_conclusao')
+                    data_conclusao = data_campo(dados_atuais, 'data_conclusao')
+                    tarefa_ja_concluida = data_conclusao is not None
                     status_atual = dados_atuais.get('status', 'Em Andamento')
                     if status_atual == "Finalizada":
                         status_atual = "Concluida"
                     if 'criado_por' in dados_atuais:
                         st.info(f"📝 Criado por: {dados_atuais['criado_por']}")
 
-                    with st.form("form_edicao"):
+                    # Chaves com o ID garantem que os campos recarreguem ao trocar de tarefa
+                    k = f"_{id_selecionado}"
+                    with st.form(f"form_edicao{k}"):
                         col_e1, col_e2 = st.columns(2)
                         with col_e1:
-                            novo_titulo = st.text_input("Tarefa", value=dados_atuais.get('tarefa_product_backlog', ''))
-                            novo_setor = st.text_input("Setor (Grooming Detalhamento)", value=dados_atuais.get('setor_grooming_detalhamento', ''))
-                            novo_resp = st.text_input("Responsável", value=dados_atuais.get('pessoa_responsavel', ''))
-                            status_lista = ["Em Andamento", "Atrasada", "Concluida"]
-                            idx_status = status_lista.index(status_atual) if status_atual in status_lista else 0
-                            novo_status = st.selectbox("Status", status_lista, index=idx_status)
+                            novo_titulo = st.text_input("Tarefa", value=texto_campo(dados_atuais, 'tarefa_product_backlog'), key=f"edit_titulo{k}")
+                            novo_setor = st.text_input("Setor (Grooming Detalhamento)", value=texto_campo(dados_atuais, 'setor_grooming_detalhamento'), key=f"edit_setor{k}")
+                            novo_resp = st.text_input("Responsável", value=texto_campo(dados_atuais, 'pessoa_responsavel'), key=f"edit_resp{k}")
+                            idx_status = STATUS_LISTA.index(status_atual) if status_atual in STATUS_LISTA else 0
+                            novo_status = st.selectbox("Status", STATUS_LISTA, index=idx_status, key=f"edit_status{k}",
+                                                       help="Para reabrir uma tarefa concluída, mude o status para 'Em Andamento'")
                         with col_e2:
-                            nova_origem = st.text_input("Origem (Não Conformidade)", value=dados_atuais.get('origem_nao_conformidade', ''))
-                            novas_acoes = st.text_area("Ações", value=dados_atuais.get('detalhamento_acoes', ''))
+                            nova_origem = st.text_input("Origem (Não Conformidade)", value=texto_campo(dados_atuais, 'origem_nao_conformidade'), key=f"edit_origem{k}")
+                            novas_acoes = st.text_area("Ações", value=texto_campo(dados_atuais, 'detalhamento_acoes'), key=f"edit_acoes{k}")
                         st.divider()
                         st.write("### 🧮 Prioridade (Editar REI e GUT)")
-                        val_r = int(dados_atuais['resultado_rei']) if pd.notna(dados_atuais.get('resultado_rei')) else 3
-                        val_e = int(dados_atuais['execucao_rei']) if pd.notna(dados_atuais.get('execucao_rei')) else 3
-                        val_i = int(dados_atuais['investimento_rei']) if pd.notna(dados_atuais.get('investimento_rei')) else 3
-                        val_g = int(dados_atuais['gravidade_gut']) if pd.notna(dados_atuais.get('gravidade_gut')) else 3
-                        val_u = int(dados_atuais['urgencia_gut']) if pd.notna(dados_atuais.get('urgencia_gut')) else 3
-                        val_t = int(dados_atuais['tendencia_gut']) if pd.notna(dados_atuais.get('tendencia_gut')) else 3
                         c1, c2 = st.columns(2)
                         with c1:
                             st.markdown("**REI**")
-                            novo_r = st.slider("Resultado", 1, 5, val_r, key="edit_r")
-                            novo_e = st.slider("Execução", 1, 5, val_e, key="edit_e")
-                            novo_i = st.slider("Investimento", 1, 5, val_i, key="edit_i")
+                            novo_r = st.slider("Resultado", 1, 5, nota_campo(dados_atuais, 'resultado_rei'), key=f"edit_r{k}")
+                            novo_e = st.slider("Execução", 1, 5, nota_campo(dados_atuais, 'execucao_rei'), key=f"edit_e{k}")
+                            novo_i = st.slider("Investimento", 1, 5, nota_campo(dados_atuais, 'investimento_rei'), key=f"edit_i{k}")
                         with c2:
                             st.markdown("**GUT**")
-                            novo_g = st.slider("Gravidade", 1, 5, val_g, key="edit_g")
-                            novo_u = st.slider("Urgência", 1, 5, val_u, key="edit_u")
-                            novo_t = st.slider("Tendência", 1, 5, val_t, key="edit_t")
+                            novo_g = st.slider("Gravidade", 1, 5, nota_campo(dados_atuais, 'gravidade_gut'), key=f"edit_g{k}")
+                            novo_u = st.slider("Urgência", 1, 5, nota_campo(dados_atuais, 'urgencia_gut'), key=f"edit_u{k}")
+                            novo_t = st.slider("Tendência", 1, 5, nota_campo(dados_atuais, 'tendencia_gut'), key=f"edit_t{k}")
                         st.divider()
                         st.write("### 📅 Datas")
                         col_data1, col_data2 = st.columns(2)
                         with col_data1:
-                            nova_data_previsao = st.date_input("Data Previsão de Conclusão", value=data_previsao, format="DD/MM/YYYY")
+                            nova_data_previsao = st.date_input("Data Previsão de Conclusão", value=data_previsao, format="DD/MM/YYYY", key=f"edit_prev{k}")
                         with col_data2:
                             if tarefa_ja_concluida:
-                                st.info(f"📅 Tarefa concluída em: {data_conclusao.strftime('%d/%m/%Y') if data_conclusao else 'N/A'}")
+                                st.info(f"📅 Tarefa concluída em: {data_conclusao.strftime('%d/%m/%Y')}\n\nPara reabrir, mude o status para 'Em Andamento' ou 'Atrasada'.")
                                 nova_data_conclusao = data_conclusao
                             else:
-                                nova_data_conclusao = st.date_input("Data de Conclusão", value=None, format="DD/MM/YYYY", help="Selecione uma data para concluir a tarefa ou deixe em branco")
+                                nova_data_conclusao = st.date_input("Data de Conclusão", value=None, format="DD/MM/YYYY", key=f"edit_conc{k}",
+                                                                    help="Selecione uma data para concluir a tarefa ou deixe em branco")
                         if st.form_submit_button("💾 Atualizar Dados"):
                             m_rei, m_gut, soma = calcular_metricas(novo_r, novo_e, novo_i, novo_g, novo_u, novo_t)
+                            reaberta = False
+                            if tarefa_ja_concluida and novo_status != "Concluida":
+                                # Reabertura: remove a data de conclusão
+                                nova_data_conclusao = None
+                                reaberta = True
+                            elif not tarefa_ja_concluida:
+                                if nova_data_conclusao:
+                                    novo_status = "Concluida"
+                                elif novo_status == "Concluida" and status_atual != "Concluida":
+                                    nova_data_conclusao = datetime.now().date()
                             update_payload = {
-                                "tarefa_product_backlog": novo_titulo, "setor_grooming_detalhamento": novo_setor,
-                                "pessoa_responsavel": novo_resp, "origem_nao_conformidade": nova_origem,
-                                "status": novo_status, "detalhamento_acoes": novas_acoes,
+                                "tarefa_product_backlog": novo_titulo.strip(), "setor_grooming_detalhamento": novo_setor.strip(),
+                                "pessoa_responsavel": novo_resp.strip(), "origem_nao_conformidade": nova_origem.strip(),
+                                "status": novo_status, "detalhamento_acoes": novas_acoes.strip(),
                                 "resultado_rei": novo_r, "execucao_rei": novo_e, "investimento_rei": novo_i,
                                 "gravidade_gut": novo_g, "urgencia_gut": novo_u, "tendencia_gut": novo_t,
                                 "matriz_rei": m_rei, "matriz_gut": m_gut, "soma_gut_rei": soma,
                                 "data_previsao_conclusao": nova_data_previsao.isoformat() if nova_data_previsao else None,
                                 "data_conclusao": nova_data_conclusao.isoformat() if nova_data_conclusao else None,
                                 "ultimo_usuario_edicao": st.session_state.user_nome,
-                                "data_ultima_edicao": datetime.now().isoformat()
+                                "data_ultima_edicao": db_client.agora_utc().isoformat()
                             }
                             if 'user_id' in dados_atuais and pd.notna(dados_atuais['user_id']):
-                                update_payload["user_id"] = dados_atuais['user_id']
+                                update_payload["user_id"] = int(dados_atuais['user_id'])
                             else:
                                 update_payload["user_id"] = st.session_state.user_id
-                            if nova_data_conclusao and not tarefa_ja_concluida:
-                                update_payload["status"] = "Concluida"
-                            try:
-                                conn.table("tarefasqrz").update(update_payload).eq("id_registro", id_selecionado).execute()
-                                st.success(f"✅ Registro {id_selecionado} atualizado com sucesso!")
-                                st.rerun()
-                            except Exception as err:
-                                st.error(f"Erro ao atualizar: {err}")
+                            if not novo_titulo.strip():
+                                st.error("O campo Tarefa é obrigatório")
+                            else:
+                                try:
+                                    conn.table("tarefasqrz").update(update_payload).eq("id_registro", id_selecionado).execute()
+                                    msg = f"✅ Tarefa #{id_selecionado} atualizada com sucesso!"
+                                    if reaberta:
+                                        msg += " A tarefa foi reaberta e a data de conclusão removida."
+                                    gravou_com_sucesso(msg)
+                                except Exception as err:
+                                    st.error(f"Erro ao atualizar: {err}")
             else:
-                st.info("Nenhum registro disponível para edição")
+                st.info("Nenhum registro encontrado para edição. Ajuste a busca acima.")
 
             st.divider()
             with st.expander("🗑️ Excluir Registro"):
-                if not df.empty:
-                    opcoes = df.apply(lambda row: f"{row['id_registro']} - {row['tarefa_product_backlog'][:40]} | Setor: {row.get('setor_grooming_detalhamento', '')} | Origem: {row.get('origem_nao_conformidade', '')} | Resp: {row.get('pessoa_responsavel', '')}", axis=1).tolist()
-                    id_selecionado_excluir = st.selectbox("Selecione o registro para remoção", options=opcoes, key="excluir_select")
-                    id_excluir = int(id_selecionado_excluir.split(" - ")[0])
+                if not df_filtrado.empty:
+                    st.caption("A lista respeita a busca acima.")
+                    rotulos_excluir = {row['id_registro']: rotulo_tarefa(row) for _, row in df_filtrado.iterrows()}
+                    id_excluir = st.selectbox(
+                        "Selecione o registro para remoção", options=list(rotulos_excluir.keys()),
+                        format_func=lambda i: rotulos_excluir.get(i, str(i)), key="excluir_select"
+                    )
                     registro = df[df['id_registro'] == id_excluir].iloc[0]
-                    st.info(f"**Tarefa:** {registro['tarefa_product_backlog']}\n**Setor:** {registro.get('setor_grooming_detalhamento', 'N/A')}\n**Origem:** {registro.get('origem_nao_conformidade', 'N/A')}\n**Responsável:** {registro.get('pessoa_responsavel', 'N/A')}\n**Status:** {registro.get('status', 'N/A')}")
-                    if st.button("Remover Definitivamente", type="primary", key="excluir_btn"):
+                    st.info(f"**Tarefa:** {registro['tarefa_product_backlog']}\n\n**Setor:** {registro.get('setor_grooming_detalhamento', 'N/A')}\n\n**Origem:** {registro.get('origem_nao_conformidade', 'N/A')}\n\n**Responsável:** {registro.get('pessoa_responsavel', 'N/A')}\n\n**Status:** {registro.get('status', 'N/A')}")
+                    confirmado = st.checkbox(f"Confirmo que desejo excluir definitivamente a tarefa #{id_excluir}", key=f"excluir_confirma_{id_excluir}")
+                    if st.button("Remover Definitivamente", type="primary", key="excluir_btn", disabled=not confirmado):
                         try:
-                            conn.table("tarefasqrz").delete().eq("id_registro", id_excluir).execute()
-                            st.success(f"ID {id_excluir} removido com sucesso!")
-                            st.rerun()
+                            conn.table("tarefasqrz").delete().eq("id_registro", int(id_excluir)).execute()
+                            gravou_com_sucesso(f"🗑️ Tarefa #{id_excluir} removida com sucesso!")
                         except Exception as err:
                             st.error(f"Erro ao remover: {err}")
                 else:
@@ -565,7 +319,7 @@ def interface_principal():
                 resp = st.text_input("Pessoa Responsável")
             with col_inf2:
                 origem = st.text_input("Origem (Não Conformidade)")
-                status_cad = st.selectbox("Status Inicial", ["Em Andamento", "Atrasada", "Concluida"])
+                status_cad = st.selectbox("Status Inicial", STATUS_LISTA)
                 acoes_init = st.text_area("Detalhamento de Ações")
             st.divider()
             st.write("### 📅 Datas")
@@ -594,6 +348,8 @@ def interface_principal():
                     m_rei, m_gut, soma = calcular_metricas(r, e, i, g, u, t)
                     if status_cad == "Concluida" and not data_conclusao_nova:
                         data_conclusao_nova = datetime.now().date()
+                    if data_conclusao_nova:
+                        status_cad = "Concluida"
                     payload = {
                         "tarefa_product_backlog": t_backlog.strip(), "setor_grooming_detalhamento": setor.strip() if setor else '',
                         "pessoa_responsavel": resp.strip() if resp else '', "origem_nao_conformidade": origem.strip() if origem else '',
@@ -605,28 +361,18 @@ def interface_principal():
                         "data_conclusao": data_conclusao_nova.isoformat() if data_conclusao_nova else None,
                         "user_id": st.session_state.user_id,
                         "ultimo_usuario_edicao": st.session_state.user_nome,
-                        "data_ultima_edicao": datetime.now().isoformat()
+                        "data_ultima_edicao": db_client.agora_utc().isoformat()
                     }
                     try:
                         conn.table("tarefasqrz").insert(payload).execute()
-                        st.success(f"✅ Tarefa cadastrada com sucesso! Prioridade Total: {soma}")
-                        st.balloons()
-                        st.rerun()
+                        gravou_com_sucesso(f"✅ Tarefa cadastrada com sucesso! Prioridade Total: {soma}")
                     except Exception as err:
                         st.error(f"Erro ao salvar: {err}")
 
-# ==========================================
-# 9. FLUXO PRINCIPAL
-# ==========================================
-def main():
-    if not st.session_state.authenticated:
-        tela_autenticacao()
-    else:
-        interface_principal()
+    # Voltar ao menu principal no rodapé da sidebar
+    st.sidebar.divider()
+    if st.sidebar.button("← Voltar ao menu principal", use_container_width=True):
+        st.switch_page("main.py")
 
 if __name__ == "__main__":
     main()
-
-# dentro de usuarios.py, no final da interface
-if st.sidebar.button("← Voltar ao menu principal"):
-    st.switch_page("main.py")

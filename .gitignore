@@ -2,6 +2,8 @@
 secrets.toml
 __pycache__/
 *.pyc
+.venv/
+venv/
 .DS_Store
 
 # Pastas de backup/legado contendo chaves expostas

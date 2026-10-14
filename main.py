@@ -1,4 +1,5 @@
 import streamlit as st
+import ui_components
 
 # Configuração da página sem barra lateral (sidebar colapsada e sem conteúdo)
 st.set_page_config(
@@ -7,16 +8,8 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Remove a barra lateral completamente (opcional, mas com 'collapsed' ela some)
-st.markdown(
-    """
-    <style>
-        [data-testid="stSidebar"] { display: none; }
-        [data-testid="collapsedControl"] { display: none; }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+# Remove a barra lateral completamente
+ui_components.injetar_css_ocultacao(nav_only=False)
 
 # Logo na tela principal (centralizada)
 col_logo1, col_logo2, col_logo3 = st.columns([1, 2, 1])
@@ -30,7 +23,7 @@ with col_logo2:
 st.title("🏭 Sistema Integrado QRZ")
 st.markdown("Selecione o módulo desejado:")
 
-# Botões de navegação (sem duplicação de ícones)
+# Botões de navegação
 col1, col2, col3 = st.columns(3)
 
 with col1:
