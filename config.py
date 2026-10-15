@@ -22,3 +22,6 @@ STYLE_HIDE_NAV_ONLY = """
     }
 </style>
 """
+
+# Versão exibida na tela de login
+VERSAO_APP = "2026.10"
