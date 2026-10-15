@@ -23,7 +23,6 @@ PAGINA_CONTA = st.Page("pages/minha_conta.py", title="Minha Conta", icon="🔑")
 # 1. NÃO AUTENTICADO: apenas a tela de login
 # ==========================================
 if not st.session_state.authenticated:
-    ui_components.injetar_css_ocultacao(nav_only=False)
     db_client.criar_admin_se_nao_existir(conn)
     auth.renderizar_tela_login(conn)
     st.stop()

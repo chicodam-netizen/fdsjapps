@@ -63,33 +63,33 @@ def _voltar_ao_login():
     st.session_state.reset_tentativas = 0
 
 def renderizar_tela_login(conn):
-    """Tela única de login (todos os perfis) com recuperação de senha, centralizada."""
+    """Tela única de login (todos os perfis) com recuperação de senha, em cartão centralizado."""
     inicializar_sessao()
-    _, centro, _ = st.columns([1, 1.4, 1])
+    ui_components.injetar_estilo_login()
+    _, centro, _ = st.columns([1.25, 1, 1.25])
     with centro:
         _conteudo_login(conn)
 
-def _conteudo_login(conn):
-    try:
-        st.image(Image.open("logo.png"), use_container_width=True)
-    except Exception:
-        pass
-    st.title("🔐 Sistema de Acesso QRZ")
-    st.markdown("Faça login para acessar o sistema")
+def _cabecalho_cartao(titulo, subtitulo):
+    st.markdown(f"### {titulo}")
+    st.markdown(f'<p class="qrz-sub">{subtitulo}</p>', unsafe_allow_html=True)
 
+def _rodape_cartao():
+    st.markdown(f'<p class="qrz-versao">VERSÃO {config.VERSAO_APP}</p>', unsafe_allow_html=True)
+
+def _conteudo_login(conn):
     ui_components.exibir_aviso()
 
     # FLUXO DE RECUPERAÇÃO DE SENHA (Etapa: Verificação do Código)
     if st.session_state.reset_step == "verify":
-        st.subheader("🔑 Redefinir senha")
-        st.caption("Digite o código de 6 dígitos enviado para o seu e-mail.")
         with st.form("form_reset_verify"):
+            _cabecalho_cartao("Redefinir senha", "Digite o código de 6 dígitos enviado para o seu e-mail")
             email = st.text_input("E-mail", value=st.session_state.reset_email, disabled=True)
             code = st.text_input("Código de verificação", placeholder="Digite o código recebido")
             nova_senha = st.text_input("Nova senha", type="password", placeholder="Mínimo 6 caracteres")
             confirmar = st.text_input("Confirmar nova senha", type="password")
 
-            if st.form_submit_button("Redefinir senha", use_container_width=True):
+            if st.form_submit_button("Redefinir senha", type="primary", use_container_width=True):
                 if code and nova_senha and confirmar:
                     if nova_senha != confirmar:
                         st.error("As senhas não coincidem")
@@ -114,22 +114,21 @@ def _conteudo_login(conn):
                             st.error(msg)
                 else:
                     st.warning("Preencha todos os campos")
+            _rodape_cartao()
 
-        if st.button("Voltar ao login"):
+        if st.button("← Voltar ao login", type="tertiary"):
             _voltar_ao_login()
             st.rerun()
         return
 
     # FLUXO DE LOGIN NORMAL
     with st.form("form_login"):
+        _cabecalho_cartao("Sistema de Gestão QRZ", "Entre com seu e-mail e senha")
         email = st.text_input("E-mail", placeholder="seu@email.com")
         senha = st.text_input("Senha", type="password", placeholder="••••••••")
-        
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            submit_login = st.form_submit_button("Entrar", use_container_width=True)
-        with col2:
-            submit_reset_req = st.form_submit_button("Esqueci minha senha", use_container_width=True)
+
+        submit_login = st.form_submit_button("Entrar", type="primary", icon=":material/login:", use_container_width=True)
+        submit_reset_req = st.form_submit_button("Esqueci minha senha", type="tertiary")
 
         # Tratar solicitação de recuperação de senha
         if submit_reset_req:
@@ -157,20 +156,21 @@ def _conteudo_login(conn):
                         # Mensagem única para e-mail inexistente ou senha errada
                         if not usuario or not db_client.verificar_senha(senha, usuario.get('senha_hash'), usuario.get('salt', '')):
                             st.error("E-mail ou senha inválidos")
-                            return
+                        else:
+                            conn.table(config.TABELA_USUARIOS).update({
+                                "last_login": db_client.agora_utc().isoformat()
+                            }).eq("id", usuario['id']).execute()
 
-                        conn.table(config.TABELA_USUARIOS).update({
-                            "last_login": db_client.agora_utc().isoformat()
-                        }).eq("id", usuario['id']).execute()
+                            st.session_state.authenticated = True
+                            st.session_state.user_email = usuario['email']
+                            st.session_state.user_id = usuario['id']
+                            st.session_state.user_nome = usuario.get('nome_completo', 'Usuário')
+                            st.session_state.is_admin = bool(usuario.get('is_admin', False))
 
-                        st.session_state.authenticated = True
-                        st.session_state.user_email = usuario['email']
-                        st.session_state.user_id = usuario['id']
-                        st.session_state.user_nome = usuario.get('nome_completo', 'Usuário')
-                        st.session_state.is_admin = bool(usuario.get('is_admin', False))
-
-                        st.rerun()
+                            st.rerun()
                     except Exception as e:
                         st.error(f"Erro no processo de login: {e}")
             else:
                 st.warning("Preencha e-mail e senha")
+
+        _rodape_cartao()
