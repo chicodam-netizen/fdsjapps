@@ -53,18 +53,121 @@ def data_campo(dados, coluna):
         return None
     return valor.date() if hasattr(valor, 'date') else valor
 
-def rotulo_tarefa(row):
-    """Rótulo legível de uma tarefa para listas de seleção."""
-    titulo = str(row.get('tarefa_product_backlog', ''))
-    if len(titulo) > 60:
-        titulo = titulo[:60] + "…"
-    return f"#{row['id_registro']} — {titulo} | {row.get('pessoa_responsavel', '')} | {row.get('status', '')}"
-
 def gravou_com_sucesso(mensagem):
     """Após gravar: descarta o cache, guarda a mensagem e recarrega a tela."""
     db_client.limpar_cache_backlog()
     ui_components.definir_aviso(mensagem)
+    st.session_state['tabela_versao'] = st.session_state.get('tabela_versao', 0) + 1
+    st.session_state['_ultima_selecao'] = None
+    st.session_state.pop('tarefa_em_edicao', None)
     st.rerun()
+
+def fechar_edicao():
+    """Chamado quando o usuário fecha a janela de edição pelo X (ou Esc)."""
+    st.session_state.pop('tarefa_em_edicao', None)
+
+@st.dialog("✏️ Editar tarefa", width="large", on_dismiss=fechar_edicao)
+def dialog_editar_tarefa(conn, df, id_selecionado):
+    """Janela de edição (e exclusão) de uma tarefa, aberta a partir da tabela."""
+    dados_atuais = df[df['id_registro'] == id_selecionado].iloc[0]
+    data_previsao = data_campo(dados_atuais, 'data_previsao_conclusao')
+    data_conclusao = data_campo(dados_atuais, 'data_conclusao')
+    tarefa_ja_concluida = data_conclusao is not None
+    status_atual = dados_atuais.get('status', 'Em Andamento')
+    if status_atual == "Finalizada":
+        status_atual = "Concluida"
+    st.markdown(f"#### #{id_selecionado} — {dados_atuais.get('tarefa_product_backlog', '')}")
+    if 'criado_por' in dados_atuais:
+        st.caption(f"📝 Criado por: {dados_atuais['criado_por']}")
+
+    # Chaves com o ID garantem que os campos recarreguem ao trocar de tarefa
+    k = f"_{id_selecionado}"
+    with st.form(f"form_edicao{k}"):
+        col_e1, col_e2 = st.columns(2)
+        with col_e1:
+            novo_titulo = st.text_input("Tarefa", value=texto_campo(dados_atuais, 'tarefa_product_backlog'), key=f"edit_titulo{k}")
+            novo_setor = st.text_input("Setor (Grooming Detalhamento)", value=texto_campo(dados_atuais, 'setor_grooming_detalhamento'), key=f"edit_setor{k}")
+            novo_resp = st.text_input("Responsável", value=texto_campo(dados_atuais, 'pessoa_responsavel'), key=f"edit_resp{k}")
+            idx_status = STATUS_LISTA.index(status_atual) if status_atual in STATUS_LISTA else 0
+            novo_status = st.selectbox("Status", STATUS_LISTA, index=idx_status, key=f"edit_status{k}",
+                                       help="Para reabrir uma tarefa concluída, mude o status para 'Em Andamento'")
+        with col_e2:
+            nova_origem = st.text_input("Origem (Não Conformidade)", value=texto_campo(dados_atuais, 'origem_nao_conformidade'), key=f"edit_origem{k}")
+            novas_acoes = st.text_area("Ações", value=texto_campo(dados_atuais, 'detalhamento_acoes'), key=f"edit_acoes{k}")
+        st.divider()
+        st.write("### 🧮 Prioridade (Editar REI e GUT)")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**REI**")
+            novo_r = st.slider("Resultado", 1, 5, nota_campo(dados_atuais, 'resultado_rei'), key=f"edit_r{k}")
+            novo_e = st.slider("Execução", 1, 5, nota_campo(dados_atuais, 'execucao_rei'), key=f"edit_e{k}")
+            novo_i = st.slider("Investimento", 1, 5, nota_campo(dados_atuais, 'investimento_rei'), key=f"edit_i{k}")
+        with c2:
+            st.markdown("**GUT**")
+            novo_g = st.slider("Gravidade", 1, 5, nota_campo(dados_atuais, 'gravidade_gut'), key=f"edit_g{k}")
+            novo_u = st.slider("Urgência", 1, 5, nota_campo(dados_atuais, 'urgencia_gut'), key=f"edit_u{k}")
+            novo_t = st.slider("Tendência", 1, 5, nota_campo(dados_atuais, 'tendencia_gut'), key=f"edit_t{k}")
+        st.divider()
+        st.write("### 📅 Datas")
+        col_data1, col_data2 = st.columns(2)
+        with col_data1:
+            nova_data_previsao = st.date_input("Data Previsão de Conclusão", value=data_previsao, format="DD/MM/YYYY", key=f"edit_prev{k}")
+        with col_data2:
+            if tarefa_ja_concluida:
+                st.info(f"📅 Tarefa concluída em: {data_conclusao.strftime('%d/%m/%Y')}\n\nPara reabrir, mude o status para 'Em Andamento' ou 'Atrasada'.")
+                nova_data_conclusao = data_conclusao
+            else:
+                nova_data_conclusao = st.date_input("Data de Conclusão", value=None, format="DD/MM/YYYY", key=f"edit_conc{k}",
+                                                    help="Selecione uma data para concluir a tarefa ou deixe em branco")
+        if st.form_submit_button("💾 Atualizar Dados"):
+            m_rei, m_gut, soma = calcular_metricas(novo_r, novo_e, novo_i, novo_g, novo_u, novo_t)
+            reaberta = False
+            if tarefa_ja_concluida and novo_status != "Concluida":
+                # Reabertura: remove a data de conclusão
+                nova_data_conclusao = None
+                reaberta = True
+            elif not tarefa_ja_concluida:
+                if nova_data_conclusao:
+                    novo_status = "Concluida"
+                elif novo_status == "Concluida" and status_atual != "Concluida":
+                    nova_data_conclusao = datetime.now().date()
+            update_payload = {
+                "tarefa_product_backlog": novo_titulo.strip(), "setor_grooming_detalhamento": novo_setor.strip(),
+                "pessoa_responsavel": novo_resp.strip(), "origem_nao_conformidade": nova_origem.strip(),
+                "status": novo_status, "detalhamento_acoes": novas_acoes.strip(),
+                "resultado_rei": novo_r, "execucao_rei": novo_e, "investimento_rei": novo_i,
+                "gravidade_gut": novo_g, "urgencia_gut": novo_u, "tendencia_gut": novo_t,
+                "matriz_rei": m_rei, "matriz_gut": m_gut, "soma_gut_rei": soma,
+                "data_previsao_conclusao": nova_data_previsao.isoformat() if nova_data_previsao else None,
+                "data_conclusao": nova_data_conclusao.isoformat() if nova_data_conclusao else None,
+                "ultimo_usuario_edicao": st.session_state.user_nome,
+                "data_ultima_edicao": db_client.agora_utc().isoformat()
+            }
+            if 'user_id' in dados_atuais and pd.notna(dados_atuais['user_id']):
+                update_payload["user_id"] = int(dados_atuais['user_id'])
+            else:
+                update_payload["user_id"] = st.session_state.user_id
+            if not novo_titulo.strip():
+                st.error("O campo Tarefa é obrigatório")
+            else:
+                try:
+                    conn.table("tarefasqrz").update(update_payload).eq("id_registro", id_selecionado).execute()
+                    msg = f"✅ Tarefa #{id_selecionado} atualizada com sucesso!"
+                    if reaberta:
+                        msg += " A tarefa foi reaberta e a data de conclusão removida."
+                    gravou_com_sucesso(msg)
+                except Exception as err:
+                    st.error(f"Erro ao atualizar: {err}")
+
+    st.divider()
+    with st.expander("🗑️ Excluir esta tarefa"):
+        confirmado = st.checkbox(f"Confirmo que desejo excluir definitivamente a tarefa #{id_selecionado}", key=f"excluir_confirma_{id_selecionado}")
+        if st.button("Remover Definitivamente", type="primary", key=f"excluir_btn_{id_selecionado}", disabled=not confirmado):
+            try:
+                conn.table("tarefasqrz").delete().eq("id_registro", int(id_selecionado)).execute()
+                gravou_com_sucesso(f"🗑️ Tarefa #{id_selecionado} removida com sucesso!")
+            except Exception as err:
+                st.error(f"Erro ao remover: {err}")
 
 # ==========================================
 # 3. FLUXO PRINCIPAL
@@ -133,132 +236,34 @@ def main():
             termo = st.text_input("🔍 Localizar tarefa (ID, Nome, Responsável, Setor ou Origem)")
             df_filtrado = df[df.apply(lambda row: termo.lower() in row.astype(str).str.lower().values, axis=1)] if termo else df
             st.subheader(f"Registros Encontrados: {len(df_filtrado)}")
+            st.caption("✏️ Clique na caixa à esquerda de uma tarefa para abri-la para edição.")
             colunas_exibir = ['id_registro', 'tarefa_product_backlog', 'pessoa_responsavel', 'status', 'criado_por', 'data_previsao_conclusao']
             colunas_disponiveis = [col for col in colunas_exibir if col in df_filtrado.columns]
-            st.dataframe(df_filtrado[colunas_disponiveis].style.map(cor_status, subset=['status']), use_container_width=True, hide_index=True)
+            df_tabela = df_filtrado[colunas_disponiveis].reset_index(drop=True)
+            selecao = st.dataframe(
+                df_tabela.style.map(cor_status, subset=['status']), use_container_width=True, hide_index=True,
+                on_select="rerun", selection_mode="single-row",
+                key=f"tabela_tarefas_{st.session_state.get('tabela_versao', 0)}"
+            )
 
-            st.divider()
-            st.subheader("📝 Editar Registro")
-            lista_ids = df_filtrado['id_registro'].tolist()
-            if lista_ids:
-                rotulos = {row['id_registro']: rotulo_tarefa(row) for _, row in df_filtrado.iterrows()}
-                id_selecionado = st.selectbox(
-                    "Selecione a tarefa para editar", options=lista_ids,
-                    format_func=lambda i: rotulos.get(i, str(i)),
-                    help="Digite parte do título ou do ID para filtrar a lista"
-                )
-                if id_selecionado:
-                    dados_atuais = df[df['id_registro'] == id_selecionado].iloc[0]
-                    data_previsao = data_campo(dados_atuais, 'data_previsao_conclusao')
-                    data_conclusao = data_campo(dados_atuais, 'data_conclusao')
-                    tarefa_ja_concluida = data_conclusao is not None
-                    status_atual = dados_atuais.get('status', 'Em Andamento')
-                    if status_atual == "Finalizada":
-                        status_atual = "Concluida"
-                    if 'criado_por' in dados_atuais:
-                        st.info(f"📝 Criado por: {dados_atuais['criado_por']}")
-
-                    # Chaves com o ID garantem que os campos recarreguem ao trocar de tarefa
-                    k = f"_{id_selecionado}"
-                    with st.form(f"form_edicao{k}"):
-                        col_e1, col_e2 = st.columns(2)
-                        with col_e1:
-                            novo_titulo = st.text_input("Tarefa", value=texto_campo(dados_atuais, 'tarefa_product_backlog'), key=f"edit_titulo{k}")
-                            novo_setor = st.text_input("Setor (Grooming Detalhamento)", value=texto_campo(dados_atuais, 'setor_grooming_detalhamento'), key=f"edit_setor{k}")
-                            novo_resp = st.text_input("Responsável", value=texto_campo(dados_atuais, 'pessoa_responsavel'), key=f"edit_resp{k}")
-                            idx_status = STATUS_LISTA.index(status_atual) if status_atual in STATUS_LISTA else 0
-                            novo_status = st.selectbox("Status", STATUS_LISTA, index=idx_status, key=f"edit_status{k}",
-                                                       help="Para reabrir uma tarefa concluída, mude o status para 'Em Andamento'")
-                        with col_e2:
-                            nova_origem = st.text_input("Origem (Não Conformidade)", value=texto_campo(dados_atuais, 'origem_nao_conformidade'), key=f"edit_origem{k}")
-                            novas_acoes = st.text_area("Ações", value=texto_campo(dados_atuais, 'detalhamento_acoes'), key=f"edit_acoes{k}")
-                        st.divider()
-                        st.write("### 🧮 Prioridade (Editar REI e GUT)")
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            st.markdown("**REI**")
-                            novo_r = st.slider("Resultado", 1, 5, nota_campo(dados_atuais, 'resultado_rei'), key=f"edit_r{k}")
-                            novo_e = st.slider("Execução", 1, 5, nota_campo(dados_atuais, 'execucao_rei'), key=f"edit_e{k}")
-                            novo_i = st.slider("Investimento", 1, 5, nota_campo(dados_atuais, 'investimento_rei'), key=f"edit_i{k}")
-                        with c2:
-                            st.markdown("**GUT**")
-                            novo_g = st.slider("Gravidade", 1, 5, nota_campo(dados_atuais, 'gravidade_gut'), key=f"edit_g{k}")
-                            novo_u = st.slider("Urgência", 1, 5, nota_campo(dados_atuais, 'urgencia_gut'), key=f"edit_u{k}")
-                            novo_t = st.slider("Tendência", 1, 5, nota_campo(dados_atuais, 'tendencia_gut'), key=f"edit_t{k}")
-                        st.divider()
-                        st.write("### 📅 Datas")
-                        col_data1, col_data2 = st.columns(2)
-                        with col_data1:
-                            nova_data_previsao = st.date_input("Data Previsão de Conclusão", value=data_previsao, format="DD/MM/YYYY", key=f"edit_prev{k}")
-                        with col_data2:
-                            if tarefa_ja_concluida:
-                                st.info(f"📅 Tarefa concluída em: {data_conclusao.strftime('%d/%m/%Y')}\n\nPara reabrir, mude o status para 'Em Andamento' ou 'Atrasada'.")
-                                nova_data_conclusao = data_conclusao
-                            else:
-                                nova_data_conclusao = st.date_input("Data de Conclusão", value=None, format="DD/MM/YYYY", key=f"edit_conc{k}",
-                                                                    help="Selecione uma data para concluir a tarefa ou deixe em branco")
-                        if st.form_submit_button("💾 Atualizar Dados"):
-                            m_rei, m_gut, soma = calcular_metricas(novo_r, novo_e, novo_i, novo_g, novo_u, novo_t)
-                            reaberta = False
-                            if tarefa_ja_concluida and novo_status != "Concluida":
-                                # Reabertura: remove a data de conclusão
-                                nova_data_conclusao = None
-                                reaberta = True
-                            elif not tarefa_ja_concluida:
-                                if nova_data_conclusao:
-                                    novo_status = "Concluida"
-                                elif novo_status == "Concluida" and status_atual != "Concluida":
-                                    nova_data_conclusao = datetime.now().date()
-                            update_payload = {
-                                "tarefa_product_backlog": novo_titulo.strip(), "setor_grooming_detalhamento": novo_setor.strip(),
-                                "pessoa_responsavel": novo_resp.strip(), "origem_nao_conformidade": nova_origem.strip(),
-                                "status": novo_status, "detalhamento_acoes": novas_acoes.strip(),
-                                "resultado_rei": novo_r, "execucao_rei": novo_e, "investimento_rei": novo_i,
-                                "gravidade_gut": novo_g, "urgencia_gut": novo_u, "tendencia_gut": novo_t,
-                                "matriz_rei": m_rei, "matriz_gut": m_gut, "soma_gut_rei": soma,
-                                "data_previsao_conclusao": nova_data_previsao.isoformat() if nova_data_previsao else None,
-                                "data_conclusao": nova_data_conclusao.isoformat() if nova_data_conclusao else None,
-                                "ultimo_usuario_edicao": st.session_state.user_nome,
-                                "data_ultima_edicao": db_client.agora_utc().isoformat()
-                            }
-                            if 'user_id' in dados_atuais and pd.notna(dados_atuais['user_id']):
-                                update_payload["user_id"] = int(dados_atuais['user_id'])
-                            else:
-                                update_payload["user_id"] = st.session_state.user_id
-                            if not novo_titulo.strip():
-                                st.error("O campo Tarefa é obrigatório")
-                            else:
-                                try:
-                                    conn.table("tarefasqrz").update(update_payload).eq("id_registro", id_selecionado).execute()
-                                    msg = f"✅ Tarefa #{id_selecionado} atualizada com sucesso!"
-                                    if reaberta:
-                                        msg += " A tarefa foi reaberta e a data de conclusão removida."
-                                    gravou_com_sucesso(msg)
-                                except Exception as err:
-                                    st.error(f"Erro ao atualizar: {err}")
+            linhas = selecao.selection.rows if selecao else []
+            if linhas:
+                id_linha = int(df_tabela.iloc[linhas[0]]['id_registro'])
+                # Abre automaticamente ao selecionar; o botão permite reabrir após fechar a janela
+                if st.session_state.get('_ultima_selecao') != id_linha:
+                    st.session_state['_ultima_selecao'] = id_linha
+                    st.session_state['tarefa_em_edicao'] = id_linha
+                if st.button(f"✏️ Abrir tarefa #{id_linha} para edição", type="primary"):
+                    st.session_state['tarefa_em_edicao'] = id_linha
             else:
-                st.info("Nenhum registro encontrado para edição. Ajuste a busca acima.")
+                st.session_state['_ultima_selecao'] = None
 
-            st.divider()
-            with st.expander("🗑️ Excluir Registro"):
-                if not df_filtrado.empty:
-                    st.caption("A lista respeita a busca acima.")
-                    rotulos_excluir = {row['id_registro']: rotulo_tarefa(row) for _, row in df_filtrado.iterrows()}
-                    id_excluir = st.selectbox(
-                        "Selecione o registro para remoção", options=list(rotulos_excluir.keys()),
-                        format_func=lambda i: rotulos_excluir.get(i, str(i)), key="excluir_select"
-                    )
-                    registro = df[df['id_registro'] == id_excluir].iloc[0]
-                    st.info(f"**Tarefa:** {registro['tarefa_product_backlog']}\n\n**Setor:** {registro.get('setor_grooming_detalhamento', 'N/A')}\n\n**Origem:** {registro.get('origem_nao_conformidade', 'N/A')}\n\n**Responsável:** {registro.get('pessoa_responsavel', 'N/A')}\n\n**Status:** {registro.get('status', 'N/A')}")
-                    confirmado = st.checkbox(f"Confirmo que desejo excluir definitivamente a tarefa #{id_excluir}", key=f"excluir_confirma_{id_excluir}")
-                    if st.button("Remover Definitivamente", type="primary", key="excluir_btn", disabled=not confirmado):
-                        try:
-                            conn.table("tarefasqrz").delete().eq("id_registro", int(id_excluir)).execute()
-                            gravou_com_sucesso(f"🗑️ Tarefa #{id_excluir} removida com sucesso!")
-                        except Exception as err:
-                            st.error(f"Erro ao remover: {err}")
-                else:
-                    st.info("Nenhum registro disponível para exclusão")
+            if df_filtrado.empty:
+                st.info("Nenhum registro encontrado. Ajuste a busca acima.")
+
+            id_edicao = st.session_state.get('tarefa_em_edicao')
+            if id_edicao is not None and id_edicao in set(df['id_registro']):
+                dialog_editar_tarefa(conn, df, id_edicao)
         else:
             st.info("Nenhuma tarefa encontrada no banco de dados.")
 

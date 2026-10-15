@@ -1,4 +1,5 @@
-streamlit>=1.40.0,<1.50.0
+# >=1.49: st.dialog(on_dismiss=...) usado no Lançamento de Tarefas
+streamlit>=1.49.0,<1.50.0
 pandas>=2.0.0,<2.2.0
 plotly>=5.17.0,<6.0.0
 st-supabase-connection==2.1.0
