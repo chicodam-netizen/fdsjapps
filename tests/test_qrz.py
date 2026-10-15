@@ -265,16 +265,31 @@ def _ultimo(widgets, label):
 
 
 def _selecionar_tarefa(at, id_):
-    sel = _ultimo(at.selectbox, "Selecione a tarefa para editar")
-    sel.set_value(id_).run()
-    return sel
+    """Abre a janela de edição como a seleção de uma linha da tabela faz (estado tarefa_em_edicao)."""
+    at.session_state["tarefa_em_edicao"] = id_
+    at.run()
 
 
-def test_lista_de_edicao_mostra_titulo(banco):
+def _ids_tabela(at):
+    return sorted(int(i) for i in at.dataframe[-1].value["id_registro"])
+
+
+def test_tabela_lista_tarefas_e_janela_abre(banco):
     at = _app_logado().run()
     assert not at.exception
-    sel = next(s for s in at.selectbox if s.label == "Selecione a tarefa para editar")
-    assert any("#10 — Calibrar balança" in o for o in sel.options)
+    assert _ids_tabela(at) == [10, 11, 12]
+    _selecionar_tarefa(at, 10)
+    assert not at.exception
+    assert any("#10 — Calibrar balança" in m.value for m in at.markdown)
+    assert at.text_input(key="edit_titulo_10").value == "Calibrar balança"
+
+
+def test_fechar_janela_limpa_edicao(banco):
+    at = _app_logado().run()
+    _selecionar_tarefa(at, 10)
+    at.session_state["tarefa_em_edicao"] = None  # equivalente ao on_dismiss
+    at.run()
+    assert not [t for t in at.text_input if t.key == "edit_titulo_10"]
 
 
 def test_tarefa_sem_notas_abre_sem_erro_e_nao_grava_nao_atribuido(banco):
@@ -296,7 +311,8 @@ def test_atualizacao_reflete_na_hora_e_mostra_mensagem(banco):
     next(b for b in at.button if b.label == "💾 Atualizar Dados").click().run()
     assert _tarefa_db(banco, 10)["tarefa_product_backlog"] == "Calibrar balança v2"
     assert any("#10 atualizada" in s.value for s in at.success)
-    # Sem cache velho: o cache (compartilhado entre sessões) já reflete o valor novo
+    # Janela fechada após salvar e, sem cache velho, o valor novo já aparece
+    assert "tarefa_em_edicao" not in at.session_state or at.session_state["tarefa_em_edicao"] is None
     at2 = _app_logado().run()
     _selecionar_tarefa(at2, 10)
     assert at2.text_input(key="edit_titulo_10").value == "Calibrar balança v2"
@@ -333,12 +349,11 @@ def test_trocar_de_tarefa_recarrega_sliders(banco):
 
 def test_exclusao_exige_confirmacao(banco):
     at = _app_logado().run()
-    sel = next(s for s in at.selectbox if s.key == "excluir_select")
-    sel.set_value(12).run()
-    btn = next(b for b in at.button if b.key == "excluir_btn")
+    _selecionar_tarefa(at, 12)
+    btn = next(b for b in at.button if b.key == "excluir_btn_12")
     assert btn.disabled
     at.checkbox(key="excluir_confirma_12").check().run()
-    next(b for b in at.button if b.key == "excluir_btn").click().run()
+    next(b for b in at.button if b.key == "excluir_btn_12").click().run()
     assert all(r["id_registro"] != 12 for r in banco.tabelas["tarefasqrz"])
     assert any("#12 removida" in s.value for s in at.success)
 
@@ -348,8 +363,8 @@ def test_novo_registro_aparece_imediatamente(banco):
     next(t for t in at.text_input if t.label == "Tarefa Product Backlog").input("Nova tarefa teste")
     next(b for b in at.button if b.label == "🚀 Salvar no Supabase").click().run()
     assert any(r["tarefa_product_backlog"] == "Nova tarefa teste" for r in banco.tabelas["tarefasqrz"])
-    sel = _ultimo(at.selectbox, "Selecione a tarefa para editar")
-    assert any("Nova tarefa teste" in o for o in sel.options)
+    novo_id = max(r["id_registro"] for r in banco.tabelas["tarefasqrz"])
+    assert novo_id in _ids_tabela(at)
 
 
 # ------------------------------------------------------------------
@@ -411,8 +426,7 @@ def test_filtro_global_aplica_no_lancamento(banco):
     at = _app_logado()
     at.session_state["filtro_responsavel"] = "Bruno"
     at.run()
-    sel = _ultimo(at.selectbox, "Selecione a tarefa para editar")
-    assert len(sel.options) == 1 and "Calibrar balança" in sel.options[0]
+    assert _ids_tabela(at) == [10]
     assert any("Filtros ativos" in c.value for c in at.caption)
 
 

@@ -35,7 +35,7 @@ O **Sistema Integrado QRZ** é uma aplicação web desenvolvida com Streamlit pa
   - Índices de priorização (REI e GUT) de 1 a 5
 - O sistema deve permitir buscar e filtrar tarefas por qualquer um dos atributos textuais.
 - O sistema deve permitir editar qualquer tarefa do backlog atualizando as datas de conclusão automaticamente caso o status seja alterado para "Concluida".
-- A seleção da tarefa a editar/excluir exibe ID, título, responsável e status, e respeita a busca.
+- Na lista de tarefas (que respeita a busca e os filtros globais), basta clicar na caixa à esquerda de uma linha para abrir a tarefa em uma **janela de edição**, que também permite excluí-la (com confirmação). Um botão "Abrir tarefa" permite reabrir a janela após fechá-la.
 - Uma tarefa concluída pode ser reaberta mudando o status; a data de conclusão é então removida.
 - Após salvar, cadastrar ou excluir, a lista reflete a alteração imediatamente (o cache é descartado) e uma mensagem de confirmação é exibida.
 - Campos vazios são exibidos como "Não Atribuído" apenas na visualização; esse texto nunca é gravado no banco.
