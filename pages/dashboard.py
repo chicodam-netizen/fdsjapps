@@ -7,19 +7,8 @@ import db_client
 import auth
 import ui_components
 
-# ==========================================
-# 1. CONFIGURAÇÃO E CONEXÃO
-# ==========================================
+# Dashboard de Performance GRC (login, menu e filtros ficam em main.py)
 warnings.filterwarnings('ignore')
-st.set_page_config(
-    page_title="Controle Industrial - QRZ",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# Oculta a navegação padrão do Streamlit na barra lateral
-ui_components.injetar_css_ocultacao(nav_only=True)
 
 # --- CONFIGURAÇÃO GROQ ---
 try:
@@ -28,79 +17,21 @@ except Exception:
     API_KEY_GROQ = ""
     st.error("Chave API do Groq não configurada nos segredos (secrets.toml).")
 
-# ==========================================
-# 2. FLUXO PRINCIPAL
-# ==========================================
 def main():
-    conn = db_client.obter_conexao()
-    auth.inicializar_sessao()
+    auth.exigir_login()
 
-    # Redireciona para login se não autenticado
-    if not st.session_state.authenticated:
-        auth.renderizar_tela_login(conn, apenas_admin=False)
-        return
-
-    # Sidebar do Usuário Autenticado
-    try:
-        st.sidebar.image("logo.png", use_container_width=True)
-    except:
-        st.sidebar.title("QRZ Analytics")
-    
-    st.sidebar.markdown(f"### 👤 {st.session_state.user_nome}")
-    st.sidebar.markdown(f"📧 {st.session_state.user_email}")
-    
-    menu_usuario = st.sidebar.selectbox("Menu", ["📊 Dashboard", "🔑 Alterar Senha"])
-    
-    if st.sidebar.button("🚪 Sair do Sistema", use_container_width=True):
-        auth.fazer_logout(apenas_admin=False)
-        st.rerun()
-    
-    st.sidebar.divider()
-    
-    # Rota: Alteração de Senha
-    if menu_usuario == "🔑 Alterar Senha":
-        st.title("🔑 Alterar Senha")
-        with st.form("form_alterar_senha"):
-            senha_atual = st.text_input("Senha atual", type="password")
-            nova_senha = st.text_input("Nova senha", type="password", help="Mínimo 6 caracteres")
-            confirmar_senha = st.text_input("Confirmar nova senha", type="password")
-            
-            if st.form_submit_button("Alterar Senha", use_container_width=True):
-                if nova_senha == confirmar_senha:
-                    if len(nova_senha) >= 6:
-                        with st.spinner("Alterando senha..."):
-                            sucesso, mensagem = db_client.alterar_propria_senha(conn, st.session_state.user_id, senha_atual, nova_senha)
-                            if sucesso:
-                                st.success(mensagem)
-                                st.balloons()
-                            else:
-                                st.error(mensagem)
-                    else:
-                        st.error("A nova senha deve ter no mínimo 6 caracteres")
-                else:
-                    st.error("As senhas não coincidem")
-        return
-
-    # Rota: Dashboard e Análise
     st.title("📊 Dashboard de Performance GRC")
-    
-    st.sidebar.header("🔎 Filtros Globais")
+
     df = db_client.carregar_dados_backlog(1)
     if df.empty:
         st.info("Sem dados para exibir.")
         return
-    
-    # Filtros na sidebar
-    lista_resp = ["Todos"] + sorted(df['pessoa_responsavel'].unique().tolist())
-    filtro_resp = st.sidebar.selectbox("Responsável", lista_resp)
-    lista_status = ["Todos"] + sorted(df['status'].unique().tolist())
-    filtro_status = st.sidebar.selectbox("Status", lista_status)
-    
-    df_filtered = df.copy()
-    if filtro_resp != "Todos":
-        df_filtered = df_filtered[df_filtered['pessoa_responsavel'] == filtro_resp]
-    if filtro_status != "Todos":
-        df_filtered = df_filtered[df_filtered['status'] == filtro_status]
+
+    # Filtros globais escolhidos na barra lateral
+    df_filtered = ui_components.aplicar_filtros_globais(df.copy())
+    filtros = ui_components.descrever_filtros_ativos()
+    if filtros:
+        st.caption(f"🔎 Filtros ativos: {filtros}")
     
     # Abas do Dashboard
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -230,10 +161,4 @@ Seja sempre cordial!
             except Exception as e:
                 st.error(f"Erro na IA: {e}")
 
-    # Voltar ao menu principal no rodapé da sidebar
-    st.sidebar.divider()
-    if st.sidebar.button("← Voltar ao menu principal", use_container_width=True):
-        st.switch_page("main.py")
-
-if __name__ == "__main__":
-    main()
+main()

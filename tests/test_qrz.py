@@ -92,7 +92,7 @@ def _tarefa(id_, titulo, **extra):
             "pessoa_responsavel": "Ana", "origem_nao_conformidade": "Auditoria", "status": "Em Andamento",
             "detalhamento_acoes": "Ações", "resultado_rei": 3, "execucao_rei": 3, "investimento_rei": 3,
             "matriz_rei": 27, "gravidade_gut": 3, "urgencia_gut": 3, "tendencia_gut": 3, "matriz_gut": 27,
-            "soma_gut_rei": 54, "data_previsao_conclusao": "2099-12-31", "data_conclusao": None, "user_id": 1}
+            "soma_gut_rei": 54, "percentual_ok": 50, "data_previsao_conclusao": "2099-12-31", "data_conclusao": None, "user_id": 1}
     base.update(extra)
     return base
 
@@ -115,12 +115,13 @@ def banco(monkeypatch):
     db_client.limpar_cache_backlog()
 
 
-def _app_logado(pagina="pages/entrada.py"):
+def _app_logado(pagina="pages/lancamento.py", admin=False):
     at = AppTest.from_file(pagina, default_timeout=30)
     at.session_state["authenticated"] = True
     at.session_state["user_email"] = "ana@qrz.com"
     at.session_state["user_id"] = 1
     at.session_state["user_nome"] = "Ana"
+    at.session_state["is_admin"] = admin
     return at
 
 
@@ -214,7 +215,7 @@ def _login_form(at, email, senha=""):
 
 
 def test_login_mensagem_generica(banco):
-    at = AppTest.from_file("pages/entrada.py", default_timeout=30).run()
+    at = AppTest.from_file("main.py", default_timeout=30).run()
     _login_form(at, "naoexiste@qrz.com", "x")
     at.button[0].click().run()
     assert any("E-mail ou senha inválidos" in e.value for e in at.error)
@@ -224,7 +225,7 @@ def test_login_mensagem_generica(banco):
 
 
 def test_login_com_maiusculas(banco):
-    at = AppTest.from_file("pages/entrada.py", default_timeout=30).run()
+    at = AppTest.from_file("main.py", default_timeout=30).run()
     _login_form(at, "ANA@QRZ.COM", "senha123")
     at.button[0].click().run()
     assert at.session_state["authenticated"] is True
@@ -232,7 +233,7 @@ def test_login_com_maiusculas(banco):
 
 
 def test_esqueci_senha_nao_mostra_codigo(banco):
-    at = AppTest.from_file("pages/entrada.py", default_timeout=30).run()
+    at = AppTest.from_file("main.py", default_timeout=30).run()
     _login_form(at, "ana@qrz.com")
     at.button[1].click().run()
     codigo = next(u for u in banco.tabelas["usuarios"] if u["id"] == 1)["reset_code"]
@@ -243,7 +244,7 @@ def test_esqueci_senha_nao_mostra_codigo(banco):
 
 
 def test_bloqueio_apos_5_codigos_errados(banco):
-    at = AppTest.from_file("pages/entrada.py", default_timeout=30).run()
+    at = AppTest.from_file("main.py", default_timeout=30).run()
     _login_form(at, "ana@qrz.com")
     at.button[1].click().run()
     for _ in range(5):
@@ -349,3 +350,73 @@ def test_novo_registro_aparece_imediatamente(banco):
     assert any(r["tarefa_product_backlog"] == "Nova tarefa teste" for r in banco.tabelas["tarefasqrz"])
     sel = _ultimo(at.selectbox, "Selecione a tarefa para editar")
     assert any("Nova tarefa teste" in o for o in sel.options)
+
+
+# ------------------------------------------------------------------
+# Navegação: login único -> Dashboard; Administração por perfil
+# ------------------------------------------------------------------
+def _textos_sidebar(at):
+    return [str(getattr(el, "label", "")) for el in at.sidebar.button]
+
+
+def test_login_abre_dashboard_e_menu(banco):
+    at = AppTest.from_file("main.py", default_timeout=30).run()
+    assert not at.sidebar.button  # na tela de login não há menu
+    _login_form(at, "ana@qrz.com", "senha123")
+    at.button[0].click().run()
+    assert not at.exception
+    assert any("Dashboard de Performance GRC" in t.value for t in at.title)
+    assert at.session_state["is_admin"] is False
+
+
+def test_usuario_comum_ve_administracao_desabilitada(banco):
+    at = AppTest.from_file("main.py", default_timeout=30)
+    for k, v in [("authenticated", True), ("user_email", "ana@qrz.com"), ("user_id", 1), ("user_nome", "Ana"), ("is_admin", False)]:
+        at.session_state[k] = v
+    at.run()
+    assert not at.exception
+    adm = [b for b in at.sidebar.button if "Administração" in b.label]
+    assert adm and adm[0].disabled
+
+
+def test_admin_ve_link_de_administracao(banco):
+    at = AppTest.from_file("main.py", default_timeout=30)
+    for k, v in [("authenticated", True), ("user_email", "admin@qrz.com"), ("user_id", 2), ("user_nome", "Admin"), ("is_admin", True)]:
+        at.session_state[k] = v
+    at.run()
+    assert not at.exception
+    assert not [b for b in at.sidebar.button if "Administração" in b.label]  # é link, não botão desabilitado
+
+
+def test_pagina_administracao_bloqueia_usuario_comum(banco):
+    at = _app_logado("pages/administracao.py", admin=False).run()
+    assert any("apenas para administradores" in e.value for e in at.error)
+    assert not at.tabs
+
+
+def test_pagina_administracao_abre_para_admin(banco):
+    at = _app_logado("pages/administracao.py", admin=True).run()
+    assert not at.exception and not at.error
+    assert len(at.tabs) == 2
+
+
+def test_paginas_exigem_login(banco):
+    for pagina in ("pages/dashboard.py", "pages/lancamento.py", "pages/minha_conta.py", "pages/administracao.py"):
+        at = AppTest.from_file(pagina, default_timeout=30).run()
+        assert any("Faça login" in w.value for w in at.warning), pagina
+
+
+def test_filtro_global_aplica_no_lancamento(banco):
+    banco.tabelas["tarefasqrz"][0]["pessoa_responsavel"] = "Bruno"
+    at = _app_logado()
+    at.session_state["filtro_responsavel"] = "Bruno"
+    at.run()
+    sel = _ultimo(at.selectbox, "Selecione a tarefa para editar")
+    assert len(sel.options) == 1 and "Calibrar balança" in sel.options[0]
+    assert any("Filtros ativos" in c.value for c in at.caption)
+
+
+def test_dashboard_abre_sem_erro(banco):
+    at = _app_logado("pages/dashboard.py").run()
+    assert not at.exception
+    assert any("Dashboard de Performance GRC" in t.value for t in at.title)

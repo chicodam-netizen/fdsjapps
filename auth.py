@@ -17,12 +17,8 @@ def inicializar_sessao():
         st.session_state.user_id = None
     if 'user_nome' not in st.session_state:
         st.session_state.user_nome = None
-
-    # Autenticação administrativa
-    if 'admin_authenticated' not in st.session_state:
-        st.session_state.admin_authenticated = False
-    if 'admin_user' not in st.session_state:
-        st.session_state.admin_user = None
+    if 'is_admin' not in st.session_state:
+        st.session_state.is_admin = False
 
     # Tentativas de login e reset de senha
     if 'login_attempts' not in st.session_state:
@@ -34,19 +30,30 @@ def inicializar_sessao():
     if 'reset_code' not in st.session_state:
         st.session_state.reset_code = None
 
-def fazer_logout(apenas_admin: bool = False):
-    """Limpa o estado de autenticação correspondente."""
-    if apenas_admin:
-        st.session_state.admin_authenticated = False
-        st.session_state.admin_user = None
-    else:
-        st.session_state.authenticated = False
-        st.session_state.user_email = None
-        st.session_state.user_id = None
-        st.session_state.user_nome = None
-        st.session_state.reset_step = None
-        st.session_state.reset_email = None
-        st.session_state.reset_code = None
+def fazer_logout():
+    """Limpa o estado de autenticação."""
+    st.session_state.authenticated = False
+    st.session_state.user_email = None
+    st.session_state.user_id = None
+    st.session_state.user_nome = None
+    st.session_state.is_admin = False
+    st.session_state.reset_step = None
+    st.session_state.reset_email = None
+    st.session_state.reset_code = None
+
+def exigir_login():
+    """Interrompe a página se não houver usuário autenticado."""
+    inicializar_sessao()
+    if not st.session_state.authenticated:
+        st.warning("Faça login para acessar esta página.")
+        st.stop()
+
+def exigir_admin():
+    """Interrompe a página se o usuário não for administrador."""
+    exigir_login()
+    if not st.session_state.get('is_admin', False):
+        st.error("🔒 Acesso permitido apenas para administradores.")
+        st.stop()
 
 MAX_TENTATIVAS_CODIGO = 5
 
@@ -55,24 +62,20 @@ def _voltar_ao_login():
     st.session_state.reset_email = None
     st.session_state.reset_tentativas = 0
 
-def renderizar_tela_login(conn, apenas_admin: bool = False):
-    """Renderiza a interface gráfica do Streamlit para login e recuperação de senha."""
+def renderizar_tela_login(conn):
+    """Tela única de login (todos os perfis) com recuperação de senha, centralizada."""
     inicializar_sessao()
-    
-    # Exibir logotipo na barra lateral se disponível
-    try:
-        img_logo = Image.open("logo.png")
-        st.sidebar.image(img_logo, use_container_width=True)
-    except:
-        st.sidebar.title("QRZ Analytics")
+    _, centro, _ = st.columns([1, 1.4, 1])
+    with centro:
+        _conteudo_login(conn)
 
-    # Definir títulos baseado no modo
-    if apenas_admin:
-        st.title("👥 Painel Administrativo")
-        st.markdown("### Faça login para gerenciar usuários")
-    else:
-        st.title("🔐 Sistema de Acesso QRZ")
-        st.markdown("### Faça login para acessar o backlog e análises")
+def _conteudo_login(conn):
+    try:
+        st.image(Image.open("logo.png"), use_container_width=True)
+    except Exception:
+        pass
+    st.title("🔐 Sistema de Acesso QRZ")
+    st.markdown("Faça login para acessar o sistema")
 
     ui_components.exibir_aviso()
 
@@ -95,7 +98,7 @@ def renderizar_tela_login(conn, apenas_admin: bool = False):
                     else:
                         # Verifica o código e redefine a senha
                         sucesso, msg = db_client.redefinir_senha_com_codigo(
-                            conn, email, code, nova_senha, apenas_admin=apenas_admin
+                            conn, email, code, nova_senha
                         )
                         if sucesso:
                             _voltar_ao_login()
@@ -132,7 +135,7 @@ def renderizar_tela_login(conn, apenas_admin: bool = False):
         if submit_reset_req:
             if email:
                 with st.spinner("Enviando código..."):
-                    sucesso, resultado = db_client.solicitar_reset_senha_generico(conn, email, apenas_admin=apenas_admin)
+                    sucesso, resultado = db_client.solicitar_reset_senha_generico(conn, email)
                 if sucesso:
                     st.session_state.reset_step = "verify"
                     st.session_state.reset_email = db_client.normalizar_email(email)
@@ -156,27 +159,15 @@ def renderizar_tela_login(conn, apenas_admin: bool = False):
                             st.error("E-mail ou senha inválidos")
                             return
 
-                        # Restrição para administrador (verificada só após a senha correta)
-                        if apenas_admin and not usuario.get('is_admin', False):
-                            st.error("Acesso permitido apenas para administradores")
-                            return
-
                         conn.table(config.TABELA_USUARIOS).update({
                             "last_login": db_client.agora_utc().isoformat()
                         }).eq("id", usuario['id']).execute()
 
-                        if apenas_admin:
-                            st.session_state.admin_authenticated = True
-                            st.session_state.admin_user = {
-                                "id": usuario['id'],
-                                "email": usuario['email'],
-                                "nome": usuario.get('nome_completo', 'Administrador')
-                            }
-                        else:
-                            st.session_state.authenticated = True
-                            st.session_state.user_email = usuario['email']
-                            st.session_state.user_id = usuario['id']
-                            st.session_state.user_nome = usuario.get('nome_completo', 'Usuário')
+                        st.session_state.authenticated = True
+                        st.session_state.user_email = usuario['email']
+                        st.session_state.user_id = usuario['id']
+                        st.session_state.user_nome = usuario.get('nome_completo', 'Usuário')
+                        st.session_state.is_admin = bool(usuario.get('is_admin', False))
 
                         st.rerun()
                     except Exception as e:

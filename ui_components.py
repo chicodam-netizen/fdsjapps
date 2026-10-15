@@ -42,3 +42,42 @@ def exibir_aviso():
     if aviso:
         tipo, mensagem = aviso
         getattr(st, tipo, st.info)(mensagem)
+
+# ==========================================
+# FILTROS GLOBAIS (barra lateral; valem para Dashboard e Lançamento)
+# ==========================================
+FILTROS_GLOBAIS = [
+    ("pessoa_responsavel", "Responsável", "filtro_responsavel"),
+    ("status", "Status", "filtro_status"),
+]
+
+def renderizar_filtros_globais(df):
+    """Desenha os filtros na barra lateral; a escolha fica na sessão e persiste entre páginas."""
+    st.sidebar.markdown("**🔎 Filtros Globais**")
+    for coluna, rotulo, chave in FILTROS_GLOBAIS:
+        if coluna not in df.columns:
+            continue
+        opcoes = ["Todos"] + sorted(df[coluna].dropna().unique().tolist())
+        atual = st.session_state.get(chave, "Todos")
+        if atual not in opcoes:
+            atual = "Todos"
+        st.session_state[chave] = st.sidebar.selectbox(rotulo, opcoes, index=opcoes.index(atual))
+    if any(st.session_state.get(chave, "Todos") != "Todos" for _, _, chave in FILTROS_GLOBAIS):
+        if st.sidebar.button("Limpar filtros", use_container_width=True):
+            for _, _, chave in FILTROS_GLOBAIS:
+                st.session_state[chave] = "Todos"
+            st.rerun()
+
+def aplicar_filtros_globais(df):
+    """Retorna o DataFrame filtrado pelos filtros globais escolhidos na barra lateral."""
+    for coluna, _, chave in FILTROS_GLOBAIS:
+        valor = st.session_state.get(chave, "Todos")
+        if valor != "Todos" and coluna in df.columns:
+            df = df[df[coluna] == valor]
+    return df
+
+def descrever_filtros_ativos():
+    """Texto curto com os filtros ativos (ou vazio)."""
+    ativos = [f"{rotulo}: {st.session_state[chave]}" for _, rotulo, chave in FILTROS_GLOBAIS
+              if st.session_state.get(chave, "Todos") != "Todos"]
+    return " · ".join(ativos)
