@@ -7,13 +7,7 @@ import config
 import ui_components
 from datetime import datetime
 
-# ==========================================
-# 1. CONFIGURAÇÃO DA PÁGINA
-# ==========================================
-st.set_page_config(page_title="Gestão de Backlog Pro", layout="wide")
-
-# Oculta a navegação padrão do Streamlit na barra lateral
-ui_components.injetar_css_ocultacao(nav_only=True)
+# Lançamento de Tarefas (login, menu e filtros ficam em main.py)
 
 STATUS_LISTA = ["Em Andamento", "Atrasada", "Concluida"]
 
@@ -77,57 +71,16 @@ def gravou_com_sucesso(mensagem):
 # ==========================================
 def main():
     conn = db_client.obter_conexao()
-    auth.inicializar_sessao()
+    auth.exigir_login()
 
-    # Redireciona se não autenticado
-    if not st.session_state.authenticated:
-        auth.renderizar_tela_login(conn, apenas_admin=False)
-        return
-
-    # Sidebar do Usuário
-    try:
-        st.sidebar.image("logo.png", use_container_width=True)
-    except:
-        pass
-
-    st.sidebar.markdown(f"### 👤 {st.session_state.user_nome}")
-    st.sidebar.markdown(f"📧 {st.session_state.user_email}")
-
-    menu_usuario = st.sidebar.selectbox("Menu", ["📋 Tarefas", "🔑 Alterar Senha"])
-
-    if st.sidebar.button("🚪 Sair do Sistema", use_container_width=True):
-        auth.fazer_logout(apenas_admin=False)
-        st.rerun()
-
-    st.sidebar.divider()
-
-    # Rota: Alterar Senha
-    if menu_usuario == "🔑 Alterar Senha":
-        st.title("🔑 Alterar Senha")
-        with st.form("form_alterar_senha"):
-            senha_atual = st.text_input("Senha atual", type="password")
-            nova_senha = st.text_input("Nova senha", type="password", help="Mínimo 6 caracteres")
-            confirmar_senha = st.text_input("Confirmar nova senha", type="password")
-            if st.form_submit_button("Alterar Senha", use_container_width=True):
-                if nova_senha == confirmar_senha:
-                    if len(nova_senha) >= 6:
-                        with st.spinner("Alterando senha..."):
-                            sucesso, mensagem = db_client.alterar_propria_senha(conn, st.session_state.user_id, senha_atual, nova_senha)
-                            if sucesso:
-                                st.success(mensagem)
-                                st.balloons()
-                            else:
-                                st.error(mensagem)
-                    else:
-                        st.error("A nova senha deve ter no mínimo 6 caracteres")
-                else:
-                    st.error("As senhas não coincidem")
-        return
-
-    # Rota: Gestão de Backlog
-    st.title("📋 Sistema de Controle de Tarefas")
+    st.title("📝 Lançamento de Tarefas")
     ui_components.exibir_aviso()
     df = db_client.carregar_dados_backlog(1)
+    # Filtros globais escolhidos na barra lateral
+    df = ui_components.aplicar_filtros_globais(df)
+    filtros = ui_components.descrever_filtros_ativos()
+    if filtros:
+        st.caption(f"🔎 Filtros ativos: {filtros} — limpe-os na barra lateral para ver todas as tarefas.")
 
     if not df.empty:
         if 'user_id' in df.columns:
@@ -369,10 +322,4 @@ def main():
                     except Exception as err:
                         st.error(f"Erro ao salvar: {err}")
 
-    # Voltar ao menu principal no rodapé da sidebar
-    st.sidebar.divider()
-    if st.sidebar.button("← Voltar ao menu principal", use_container_width=True):
-        st.switch_page("main.py")
-
-if __name__ == "__main__":
-    main()
+main()

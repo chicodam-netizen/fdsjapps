@@ -8,15 +8,17 @@ O **Sistema Integrado QRZ** é uma aplicação web desenvolvida com Streamlit pa
 ## 2. Requisitos Funcionais
 
 ### RF01 – Autenticação e Gestão de Sessão
-- O sistema deve restringir o acesso às telas internas (`analise.py` e `entrada.py`) para usuários autenticados.
-- O controle de sessão deve ser mantido utilizando `st.session_state` (`authenticated`, `user_email`, `user_id`, `user_nome`).
+- O sistema abre em uma **tela de login única** (com "Esqueci minha senha") para todos os perfis; após o login, o usuário vai direto ao **Dashboard de Performance GRC**.
+- A navegação é feita por um menu lateral (`st.navigation`): Dashboard, Lançamento de Tarefas, Administração, Minha Conta e Sair. Páginas não liberadas para o perfil não são registradas na navegação.
+- Todas as páginas internas exigem usuário autenticado, mesmo se acessadas diretamente pelo endereço.
+- O controle de sessão deve ser mantido utilizando `st.session_state` (`authenticated`, `user_email`, `user_id`, `user_nome`, `is_admin`).
 - As senhas dos usuários devem ser armazenadas com segurança no banco de dados utilizando hash criptográfico PBKDF2 com salt de 16 bytes gerado dinamicamente.
 - O sistema deve conter mecanismo de logout para limpar a sessão e redirecionar para a tela de login.
 
 ### RF02 – Gestão Administrativa de Usuários
-- Apenas usuários com a flag `is_admin = True` no banco de dados podem acessar o painel administrativo (`usuarios.py`).
+- Apenas usuários com a flag `is_admin = True` podem acessar a página **Administração**; para os demais, a opção aparece desabilitada no menu e a página recusa o acesso.
 - O administrador deve poder cadastrar novos usuários (não admins), listar usuários cadastrados e redefinir a senha de qualquer usuário.
-- O administrador deve poder alterar sua própria senha mediante confirmação da senha atual.
+- Todo usuário pode alterar a própria senha na página **Minha Conta**, mediante confirmação da senha atual.
 - O sistema deve conter fluxo para redefinição de senha esquecida via código de recuperação gerado aleatoriamente com validade de 15 minutos, enviado **exclusivamente por e-mail (SMTP)** — o código nunca é exibido na tela. As mensagens não revelam se o e-mail está cadastrado, e após 5 códigos incorretos o código é cancelado.
 - O login aceita o e-mail sem diferenciar maiúsculas/minúsculas e responde com mensagem única para e-mail ou senha inválidos.
 - Não há senha padrão no código: o administrador inicial, se necessário, é definido em `[admin_inicial]` nos secrets.
@@ -47,6 +49,7 @@ O **Sistema Integrado QRZ** é uma aplicação web desenvolvida com Streamlit pa
 - O sistema deve sinalizar em destaque (card de atenção/alerta) qualquer tarefa com pontuação de prioridade geral superior a 80 ou que esteja com status "Atrasada".
 
 ### RF05 – Painel de Visualização e Dashboard
+- Os **filtros globais** (Responsável e Status) ficam na barra lateral, valem para o Dashboard e para o Lançamento de Tarefas e são mantidos ao trocar de página.
 - Exibição de cartões de métricas gerais: Total de tarefas, Concluídas, Em Andamento e Atrasadas.
 - Exibição de gráficos de gauge (Plotly) de Conclusão Geral, Progresso Médio, Média GUT e Média REI.
 - Gráfico de barras horizontais indicando o percentual de progresso das 10 principais tarefas.
@@ -63,7 +66,7 @@ O **Sistema Integrado QRZ** é uma aplicação web desenvolvida com Streamlit pa
 
 - **Segurança**: Criptografia de senhas (PBKDF2 + SHA-256 + Salt) na camada de banco de dados e proteção de rotas através do bloqueio da barra lateral de navegação padrão.
 - **Desempenho**: Cache inteligente (`st.cache_data`) com tempo de expiração (TTL) de 60 segundos para as consultas ao banco do Supabase para evitar chamadas excessivas em cada ciclo de renderização do Streamlit.
-- **Usabilidade**: Barra lateral minimalista sem a navegação integrada do Streamlit para evitar burlar telas de autenticação.
+- **Usabilidade**: Menu lateral próprio por perfil; o menu de desenvolvedor do Streamlit é ocultado (`.streamlit/config.toml`, `toolbarMode = "minimal"`).
 - **Portabilidade**: Funcionamento garantido em Windows/Linux e compatibilidade de dependências descrita em `requirements.txt`.
 
 ---
@@ -76,9 +79,11 @@ d:\FD_CONSULTORIA\DESENVOLVIMENTO\QRZ/
 ├── db_client.py          # Lógica centralizada de acesso ao Supabase (CRUD, Hashing, Auth).
 ├── auth.py               # Lógica de session_state do Streamlit e telas reutilizáveis de Login.
 ├── ui_components.py      # Componentes compartilhados da interface (CSS customizado, Gauges).
-├── main.py               # Ponto de acesso unificado de roteamento.
+├── main.py               # Ponto de entrada: login único, menu lateral por perfil e filtros globais.
+├── sql/schema.sql        # Estrutura do banco (uma instância por empresa).
 └── pages/
-    ├── usuarios.py       # Painel do administrador (Gestão de Usuários).
-    ├── analise.py        # Dashboard avançado e Chatbot IA.
-    └── entrada.py        # Módulo de CRUD de Backlog (Gestão de Tarefas).
+    ├── dashboard.py      # Dashboard de Performance GRC e Chat IA.
+    ├── lancamento.py     # Lançamento de Tarefas (CRUD do backlog).
+    ├── administracao.py  # Administração de usuários (somente administradores).
+    └── minha_conta.py    # Dados do usuário e troca da própria senha.
 ```

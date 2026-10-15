@@ -1,0 +1,5 @@
+[client]
+# Esconde o menu de desenvolvedor (Deploy, Rerun, configurações) para os usuários
+toolbarMode = "minimal"
+# A navegação é feita pelo menu próprio do app (main.py)
+showSidebarNavigation = false
